@@ -16,7 +16,7 @@ void logic_update();
 void plug_state_received(struct mg_http_message event_data);
 void update_logic_temp();
 void update_logic_time();
-void update_control_mode(ControlMode mode);
+void update_logic_mode(ControlMode mode);
 ControlMode get_control_mode();
 
 #endif

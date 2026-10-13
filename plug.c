@@ -5,6 +5,7 @@
 #include "plug.h"
 #include "config.h"
 #include "logic.h"
+#include "platform.h"
 
 struct plug_request
 {
@@ -50,6 +51,7 @@ bool get_plug_state(struct mg_mgr *manager)
 
   if (n < 0 || (size_t)n >= sizeof(url))
   {
+    free(request);
     return false;
   }
 
@@ -96,23 +98,23 @@ static void plug_http_handler(struct mg_connection *connection, int event, void 
     }
     else
     {
-      printf("Plug HTTP response:\n%.*s\n",
-             (int)message->body.len,
-             message->body.buf);
+      printSerial("Plug HTTP response: %.*s",
+                  (int)message->body.len,
+                  message->body.buf);
     }
 
     connection->is_draining = 1;
     break;
   }
   case MG_EV_ERROR:
-    printf("Plug HTTP error: %s\n",
-           event_data != NULL
-               ? (char *)event_data
-               : "unknown error");
+    printSerial("Plug HTTP error: %s",
+                event_data != NULL
+                    ? (char *)event_data
+                    : "unknown error");
     break;
   case MG_EV_CLOSE:
     free(connection->fn_data);
-    printf("Plug HTTP connection closed\n");
+    printSerial("Plug HTTP connection closed");
     break;
   }
 }
@@ -121,7 +123,7 @@ bool set_plug(struct mg_mgr *manager, char *ip, bool turn_on)
 {
   if (manager == NULL)
   {
-    printf("Manager not initialised.\n");
+    printSerial("Manager not initialised.");
     return false;
   }
 
@@ -158,13 +160,13 @@ bool set_plug(struct mg_mgr *manager, char *ip, bool turn_on)
   if (connection == NULL)
   {
     free(request);
-    printf("Could not create HTTP request for plug %s\n", ip);
+    printSerial("Could not create HTTP request for plug %s", ip);
     return false;
   }
 
-  printf("Sent request to set plug %s: %s\n",
-         ip,
-         turn_on ? "on" : "off");
+  printSerial("Sent request to set plug %s: %s",
+              ip,
+              turn_on ? "on" : "off");
 
   return true;
 }

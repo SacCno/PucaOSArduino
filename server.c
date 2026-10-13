@@ -3,6 +3,7 @@
 #include "config.h"
 #include "utils.h"
 #include "logic.h"
+#include "platform.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -49,21 +50,21 @@ void start_mqtt_client(struct mg_mgr *manager, struct mg_mqtt_opts *options, Sch
 
   if (mqtt_connection == NULL)
   {
-    printf("Could not make MQTT connection\n");
+    printSerial("Could not make MQTT connection");
     schedule_mqtt_reconnect();
     return;
   }
   else
   {
-    printf("Connection to %s\n", MQTT_URL);
+    printSerial("Connection to %s", MQTT_URL);
   }
 }
 
-bool mqtt_publish(const char *topic, const char *message)
+bool mqtt_publish(const char *topic, const char *message, bool retain)
 {
   if (!mqtt_ready || mqtt_connection == NULL)
   {
-    printf("Cannot publish: MQTT not connected.\n");
+    printSerial("Cannot publish: MQTT not connected.");
     return false;
   }
 
@@ -72,11 +73,11 @@ bool mqtt_publish(const char *topic, const char *message)
     return false;
   }
 
-  struct mg_mqtt_opts options;
+  struct mg_mqtt_opts options = {0};
   options.topic = mg_str(topic);
   options.message = mg_str(message);
   options.qos = 1;
-  options.retain = false;
+  options.retain = retain;
 
   mg_mqtt_pub(mqtt_connection, &options);
 
@@ -90,17 +91,18 @@ static void mqtt_event_handler(struct mg_connection *connection, int event, void
   {
   case MG_EV_OPEN:
   {
-    printf("Network connection opened.\n");
+    printSerial("Network connection opened.");
     break;
   }
   case MG_EV_CONNECT:
   {
     struct mg_tls_opts tls_options = {
+        .ca = mg_str(BROKER_CA),
         .name = mg_url_host(MQTT_URL),
-        .skip_verification = true};
+        .skip_verification = false};
 
     mg_tls_init(connection, &tls_options);
-    printf("TLS initialised.\n");
+    printSerial("TLS initialised.");
     break;
   }
   case MG_EV_MQTT_OPEN:
@@ -108,8 +110,8 @@ static void mqtt_event_handler(struct mg_connection *connection, int event, void
     int *connack_status = event_data;
     if (connack_status == NULL || *connack_status != 0)
     {
-      printf("MQTT connection rejected, CONNACK code: %d\n",
-             connack_status != NULL ? *connack_status : -1);
+      printSerial("MQTT connection rejected, CONNACK code: %d",
+                  connack_status != NULL ? *connack_status : -1);
       mqtt_ready = false;
 
       break;
@@ -117,7 +119,7 @@ static void mqtt_event_handler(struct mg_connection *connection, int event, void
 
     mqtt_ready = true;
 
-    printf("MQTT connection established.\n");
+    printSerial("MQTT connection established.");
 
     struct mg_mqtt_opts subscribe_options;
     memset(&subscribe_options, 0, sizeof(subscribe_options));
@@ -129,7 +131,7 @@ static void mqtt_event_handler(struct mg_connection *connection, int event, void
 
       mg_mqtt_sub(connection, &subscribe_options);
 
-      printf("Subscribed to topic: %s\n", topics[i].value);
+      printSerial("Subscribed to topic: %s", topics[i].value);
     }
 
     ControlMode cm = get_control_mode();
@@ -141,15 +143,15 @@ static void mqtt_event_handler(struct mg_connection *connection, int event, void
   {
     struct mg_mqtt_message *message = (struct mg_mqtt_message *)event_data;
 
-    printf("Received MQTT message.\n");
+    printSerial("Received MQTT message.");
 
-    printf("Topic:\t%.*s\n",
-           (int)message->topic.len,
-           message->topic.buf);
+    printSerial("Topic:\t%.*s",
+                (int)message->topic.len,
+                message->topic.buf);
 
-    printf("Payload:\t%.*s\n",
-           (int)message->data.len,
-           message->data.buf);
+    printSerial("Payload:\t%.*s",
+                (int)message->data.len,
+                message->data.buf);
 
     handle_mqtt_msg(message);
 
@@ -159,16 +161,21 @@ static void mqtt_event_handler(struct mg_connection *connection, int event, void
   {
     struct mg_mqtt_message *message = (struct mg_mqtt_message *)event_data;
 
-    printf("MQTT command received. 0x%02x\n",
-           message->cmd);
+    printSerial("MQTT command received. 0x%02x",
+                message->cmd);
     break;
   }
+  /* case MG_EV_READ:
+  case MG_EV_WRITE:
+    printSerial("--- TLS TRAFFIC DUMP (%s) ---", (event_data == MG_EV_READ) ? "READ" : "WRITE");        //Enable only for debugging
+    mg_hexdump(connection->recv.buf, connection->recv.len);
+    break; */
   case MG_EV_ERROR:
   {
-    printf("Connection error: %s\n",
-           event_data != NULL
-               ? (char *)event_data
-               : "unknown error");
+    printSerial("Connection error: %s",
+                event_data != NULL
+                    ? (char *)event_data
+                    : "unknown error");
     break;
   }
   case MG_EV_CLOSE:
@@ -180,7 +187,7 @@ static void mqtt_event_handler(struct mg_connection *connection, int event, void
       schedule_mqtt_reconnect();
     }
 
-    printf("Connection closed.\n");
+    printSerial("Connection closed.");
     break;
   }
   default:
@@ -198,7 +205,7 @@ bool handle_mqtt_msg(struct mg_mqtt_message *message)
                    message->data.buf);
   if (n < 0 || (size_t)n >= sizeof(m))
   {
-    printf("Error in parsing message. L: %d", n);
+    printSerial("Error in parsing message. L: %d", n);
     return false;
   }
 
@@ -210,7 +217,7 @@ bool handle_mqtt_msg(struct mg_mqtt_message *message)
                message->topic.buf);
   if (n < 0 || (size_t)n >= sizeof(t))
   {
-    printf("Error in parsing topic.");
+    printSerial("Error in parsing topic.");
     return false;
   }
 
@@ -219,25 +226,25 @@ bool handle_mqtt_msg(struct mg_mqtt_message *message)
     Schedule new;
     memset(&new, 0, sizeof(new));
 
-    printf("1");
+    printSerial("1");
 
     if (json_to_schedule(&new, message))
     {
       if (new.count == 0)
       {
-        new = default_schedule;
+        schedule_init_default(&new);
       }
       *schedule = new;
       print_schedule(new);
       save_schedule(schedule);
 
-      mqtt_publish("/mc/schedule/update", "valid");
+      mqtt_publish("/mc/schedule/update", "valid", false);
       return true;
     }
 
-    printf("2");
+    printSerial("2");
 
-    mqtt_publish("/mc/schedule/update", "invalid");
+    mqtt_publish("/mc/schedule/update", "invalid", false);
     return false;
   }
   else if (strcmp(t, "/ph/schedule/check") == 0)
@@ -245,7 +252,7 @@ bool handle_mqtt_msg(struct mg_mqtt_message *message)
     char message[512];
     schedule_to_json(*schedule, message, sizeof(message));
 
-    mqtt_publish("/mc/schedule/check", message);
+    mqtt_publish("/mc/schedule/check", message, false);
 
     return true;
   }
@@ -262,17 +269,19 @@ bool handle_mqtt_msg(struct mg_mqtt_message *message)
       return true;
     }
 
-    printf("Invalid plug command");
+    printSerial("Invalid plug command");
   }
   else if (strcmp(t, "/ph/command/mode") == 0)
   {
     if (strcmp(m, "auto") == 0)
     {
-      update_control_mode(CONTROL_MODE_AUTO);
+      update_logic_mode(CONTROL_MODE_AUTO);
+      return true;
     }
     else if (strcmp(m, "manual") == 0)
     {
-      update_control_mode(CONTROL_MODE_MANUAL);
+      update_logic_mode(CONTROL_MODE_MANUAL);
+      return true;
     }
     else
     {
@@ -280,16 +289,16 @@ bool handle_mqtt_msg(struct mg_mqtt_message *message)
       switch (cm)
       {
       case CONTROL_MODE_AUTO:
-        mqtt_publish("/mc/command/mode", "auto");
+        mqtt_publish("/mc/command/mode", "auto", false);
         break;
       case CONTROL_MODE_MANUAL:
-        mqtt_publish("/mc/command/mode", "manual");
+        mqtt_publish("/mc/command/mode", "manual", false);
         break;
       }
     }
   }
 
-  printf("Message Topic Incorrect.");
+  printSerial("Message Topic Incorrect.");
 
   return false;
 }
@@ -305,7 +314,7 @@ static void mqtt_reconnect_timer_fn(void *arg)
     return;
   }
 
-  printf("Attempting MQTT reconnect...\n");
+  printSerial("Attempting MQTT reconnect...");
 
   mqtt_connection = mg_mqtt_connect(
       mgr,
@@ -316,19 +325,19 @@ static void mqtt_reconnect_timer_fn(void *arg)
 
   if (mqtt_connection == NULL)
   {
-    printf("MQTT reconnect attempt failed.\n");
+    printSerial("MQTT reconnect attempt failed.");
     reconnect_scheduled = true;
 
     mg_timer_add(
         mgr,
-        1000,
+        5000,
         MG_TIMER_ONCE,
         mqtt_reconnect_timer_fn,
         NULL);
   }
   else
   {
-    printf("MQTT reconnect initiated.\n");
+    printSerial("MQTT reconnect initiated.");
   }
 }
 

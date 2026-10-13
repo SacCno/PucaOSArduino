@@ -2,5 +2,9 @@
 #define MONGOOSE_CONFIG_H
 
 #define MG_ARCH MG_ARCH_ESP32
+#define MG_TLS MG_TLS_MBED
+
+#define MG_ENABLE_LOG 1
+#define MG_ENABLE_HEXDUMP 1
 
 #endif

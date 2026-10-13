@@ -1,28 +1,86 @@
 #include "schedule.h"
+#include "platform.h"
+#include "mongoose.h"
+#include "storage.h"
+
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
+#include <string.h>
 
-#define SCHEDULE_FILE "/schedule.bin" // PC solution, ESP will use flash
+#define SCHEDULE_FILE "/schedule.bin"
 
 static void sort_schedule(Schedule *s);
 
-const Schedule default_schedule =
-    {
-        .magic = 0x53434831,
-        .version = 1,
-        .count = 3,
-        .timeframes = {
-            {300, 360, 1}, // 30.0°C at 06:00 lamp on
-            {350, 720, 1}, // 35.0°C at 12:00 lamp on
-            {250, 1260, 0} // 25.0°C at 21:00 lamp off
-        },
-        .crc = 0};
+uint32_t schedule_crc(Schedule *schedule)
+{
+  return mg_crc32(0, (const char *)schedule, offsetof(Schedule, crc));
+}
 
-uint16_t get_temperature(const Schedule *sch, uint16_t current_minute)
+bool schedule_init(Schedule *schedule, uint16_t version, Timeframe timeframes[], uint16_t count)
+{
+  if (schedule == NULL || count > MAX_TIMEFRAMES || count == 0 || timeframes == NULL)
+  {
+    printSerial("Schedule Init Error.");
+    return false;
+  }
+
+  Schedule new = {0};
+
+  new.magic = 0x53434831;
+  new.version = version;
+  new.count = count;
+
+  memcpy(new.timeframes, timeframes,
+         count * sizeof new.timeframes[0]);
+
+  new.crc = schedule_crc(&new);
+
+  if (!validate_schedule(&new))
+  {
+    printSerial("Schedule init error.");
+    return false;
+  }
+
+  *schedule = new;
+  return true;
+}
+
+bool schedule_init_default(Schedule *schedule)
+{
+  if (schedule == NULL)
+  {
+    printSerial("Schedule Init Error.");
+    return false;
+  }
+
+  Schedule new = {0};
+
+  new.magic = 0x53434831;
+  new.version = 2;
+  new.count = 3;
+
+  Timeframe tfs[3] =
+      {
+          {3000, 360, 1}, // 30.0°C at 06:00 lamp on
+          {3500, 720, 1}, // 35.0°C at 12:00 lamp on
+          {2500, 1260, 0} // 25.0°C at 21:00 lamp off
+  };
+
+  memcpy(new.timeframes, tfs,
+         new.count * sizeof new.timeframes[0]);
+
+  new.crc = schedule_crc(&new);
+
+  *schedule = new;
+  return true;
+}
+
+uint16_t get_temperature_from_time(const Schedule *sch, uint16_t current_minute)
 {
   if (sch == NULL || current_minute > 1439)
   {
-    printf("get_temperature: Invalid entry parameters.");
+    printSerial("get_temperature: Invalid entry parameters.");
     return 0;
   }
 
@@ -52,7 +110,7 @@ uint16_t get_lamp_state(const Schedule *sch, uint16_t current_minute)
 {
   if (sch == NULL || current_minute > 1439)
   {
-    printf("get_lamp_state: Invalid entry parameters.");
+    printSerial("get_lamp_state: Invalid entry parameters.");
     return 0;
   }
 
@@ -78,47 +136,71 @@ uint16_t get_lamp_state(const Schedule *sch, uint16_t current_minute)
   return active >= 0 ? sch->timeframes[active].lamp_on : 0;
 }
 
+bool check_crc(Schedule *s)
+{
+  return s != NULL && s->crc == schedule_crc(s);
+}
+
+bool check_count(Schedule *s)
+{
+  return s != NULL && s->count > 0 && s->count <= MAX_TIMEFRAMES;
+}
+
 bool validate_schedule(Schedule *s)
 {
   if (s == NULL)
   {
-    printf("Cannot validate null schedule.\n");
+    printSerial("Cannot validate null schedule.");
     return false;
   }
 
-  if (s->count > MAX_TIMEFRAMES)
+  if (!check_count(s))
   {
-    printf("Error: Too many timeframes.");
+    printSerial("Error: Too many timeframes.");
+    return false;
+  }
+
+  if (s->magic != 0x53434831)
+  {
+    printSerial("Error: Invalid schedule magic number.");
+    return false;
+  }
+
+  if (!check_crc(s))
+  {
+    printSerial("Error: Incorrect CRC");
     return false;
   }
 
   sort_schedule(s);
 
+  s->crc = schedule_crc(s);
+
   for (uint16_t i = 0; i < s->count; i++)
   {
     if (s->timeframes[i].minute_of_day >= 24 * 60)
     {
-      printf("Error: Minutes of day invalid");
+      printSerial("Error: Minutes of day invalid");
       return false;
     }
 
-    if (s->timeframes[i].temperature < 50 || s->timeframes[i].temperature > 600)
+    if (s->timeframes[i].temperature < 500 || s->timeframes[i].temperature > 6000)
     {
-      printf("Error: Temperature out of range. temp=%u (%0.1fC)\n",
-             (unsigned)s->timeframes[i].temperature,
-             s->timeframes[i].temperature / 10.0);
+      printSerial("Error: Temperature out of range. temp=%u (%0.2fC)",
+                  (unsigned)s->timeframes[i].temperature,
+                  s->timeframes[i].temperature / 100.0);
       return false;
     }
 
     if (i > 0 && s->timeframes[i - 1].minute_of_day >= s->timeframes[i].minute_of_day)
     {
-      printf("Error: Timeframe out of order or overlapping.");
+      printSerial("Error: Timeframe out of order or overlapping.");
       return false;
     }
 
     if (s->timeframes[i].lamp_on != 1 && s->timeframes[i].lamp_on != 0)
     {
-      printf("Error: Lamp Int not 1 or 0");
+      printSerial("Error: Lamp Int not 1 or 0");
       return false;
     }
   }
@@ -144,88 +226,100 @@ static void sort_schedule(Schedule *s)
   qsort(s->timeframes, s->count, sizeof(Timeframe), compare);
 }
 
-bool save_schedule(const Schedule *schedule)
+bool save_schedule(Schedule *schedule)
 {
   if (schedule == NULL)
   {
-    printf("Cannot save a null schedule.\n");
+    printSerial("Cannot save a null schedule.");
     return false;
   }
 
-  FILE *file = fopen(SCHEDULE_FILE, "wb");
+  schedule->crc = schedule_crc(schedule);
 
-  if (file == NULL)
-  {
-    printf("Failed to save schedule.");
-    return false;
-  }
-
-  size_t written = fwrite(schedule, sizeof(Schedule), 1, file);
-  fclose(file);
-
-  if (written == 0)
-  {
-    printf("Failed to save schedule.\n");
-  }
-  else
-  {
-    printf("Saved schedule successfully.\n");
-  }
-
-  return written == 1;
+  return storage_write(SCHEDULE_FILE, schedule, sizeof(*schedule));
 }
 
 static bool load_schedule(Schedule *schedule)
 {
   if (schedule == NULL)
   {
-    printf("Cannot load into a null schedule.\n");
+    printSerial("Cannot load into a null schedule.");
     return false;
   }
 
-  FILE *file = fopen(SCHEDULE_FILE, "rb");
-
-  if (file == NULL)
-  {
-    printf("File error.");
-    return false;
-  }
-
-  size_t read = fread(schedule, sizeof(Schedule), 1, file);
-  fclose(file);
-
-  return read == 1;
+  return storage_read(SCHEDULE_FILE, schedule, sizeof(*schedule));
 }
 
 bool file_start_up(Schedule *schedule)
 {
   if (schedule == NULL)
   {
-    printf("Cannot load into a null schedule.\n");
+    printSerial("Cannot load into a null schedule.");
     return false;
   }
 
   if (!load_schedule(schedule))
   {
-    printf("No saved schedule found; using defaults.\n");
-    *schedule = default_schedule;
+    printSerial("Using defaults.");
+
+    schedule_init_default(schedule);
     save_schedule(schedule);
+
     return false;
   }
-  else
+
+  printSerial("Schedule Loaded Successfully.");
+
+  if (!check_crc(schedule))
   {
-    printf("Schedule Loaded Successfully.\n");
+    printSerial("Invalid CRC.");
+
+    schedule_init_default(schedule);
+    save_schedule(schedule);
+
+    return false;
   }
 
-  if (schedule->count == 0)
+  if (!check_count(schedule))
   {
-    *schedule = default_schedule;
+    printSerial("Invalid count");
+
+    schedule_init_default(schedule);
+    save_schedule(schedule);
+
+    return false;
+  }
+
+  // Update older versions of save files
+  if (schedule->version < 2)
+  {
+    schedule->version = 2;
+
+    for (uint16_t i = 0; i < schedule->count; i++)
+    {
+      schedule->timeframes[(int)i].temperature *= 10;
+    }
+
+    schedule->crc = schedule_crc(schedule);
+  }
+  else if (schedule->version > 2)
+  {
+    printSerial("This version of PucaOS cannot handle that file version.");
+
+    schedule_init_default(schedule);
+    save_schedule(schedule);
+
+    return false;
   }
 
   if (!validate_schedule(schedule))
   {
-    printf("Invalid schedule loaded; using defaults instead.\n");
-    *schedule = default_schedule;
+    printSerial("Invalid schedule loaded; using defaults instead.");
+
+    schedule_init_default(schedule);
+    save_schedule(schedule);
+
+    return false;
   }
 
   save_schedule(schedule);

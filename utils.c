@@ -1,5 +1,6 @@
 #include "utils.h"
 #include "server.h"
+#include "platform.h"
 #include <time.h>
 
 uint16_t current_minute_of_day(void)
@@ -18,7 +19,7 @@ uint16_t current_minute_of_day(void)
 
 bool append_string(char *dest, size_t dest_size, size_t *pos, const char *src);
 
-bool password_reader(
+bool depc_password_reader(
     const char *src,
     char *output,
     size_t output_size)
@@ -88,10 +89,10 @@ bool json_to_schedule(Schedule *s, struct mg_mqtt_message *msg)
     return false;
   }
 
-  Schedule new;
-  memset(&new, 0, sizeof(new)); // initialise everything at 0
+  Schedule new = {0};
 
   double count;
+  Timeframe tfs[MAX_TIMEFRAMES];
   if (mg_json_get_num(msg->data, "$.count", &count) <= 0)
   {
     return false;
@@ -100,7 +101,6 @@ bool json_to_schedule(Schedule *s, struct mg_mqtt_message *msg)
   {
     return false;
   }
-  new.count = (uint16_t)count;
 
   int n = -1;
   for (int i = 0; i < (int)count; i++)
@@ -152,9 +152,14 @@ bool json_to_schedule(Schedule *s, struct mg_mqtt_message *msg)
       return false;
     }
 
-    new.timeframes[(int)i].temperature = (uint16_t)temperature;
-    new.timeframes[(int)i].minute_of_day = (uint16_t)minute;
-    new.timeframes[(int)i].lamp_on = (uint16_t)lamp_on;
+    tfs[(int)i].temperature = (uint16_t)temperature;
+    tfs[(int)i].minute_of_day = (uint16_t)minute;
+    tfs[(int)i].lamp_on = (uint16_t)lamp_on;
+  }
+
+  if (!schedule_init(&new, 2, tfs, (uint16_t)count))
+  {
+    return false;
   }
 
   if (!validate_schedule(&new))
@@ -188,7 +193,7 @@ bool schedule_to_json(Schedule s, char *output, size_t output_size)
 
   if (n < 0 || (size_t)n >= sizeof(opening))
   {
-    printf("Schedule to JSON: String empty due to faileure.\n");
+    printSerial("Schedule to JSON: String empty due to faileure.");
     return false;
   }
 
@@ -226,7 +231,7 @@ bool schedule_to_json(Schedule s, char *output, size_t output_size)
 
     if (n < 0 || (size_t)n >= sizeof(tf))
     {
-      printf("Error creating JSON");
+      printSerial("Error creating JSON");
       return false;
     }
 
@@ -251,7 +256,7 @@ bool append_string(char *dest, size_t dest_size, size_t *pos, const char *src)
   // Check if the size of the source and existing dest fit in dest
   if (*pos + len + 1 > dest_size)
   {
-    printf("Append String Failure: destination size too small.");
+    printSerial("Append String Failure: destination size too small.");
     return false;
   }
 
@@ -267,11 +272,11 @@ void print_schedule(Schedule s)
 {
   for (int i = 0; i < s.count; i++)
   {
-    printf("\n\nCount: %d\nTemperature: %d\nMinute: %d\nLamp On: %d\n\n",
-           (int)s.count,
-           (int)s.timeframes[i].temperature,
-           (int)s.timeframes[i].minute_of_day,
-           (int)s.timeframes[i].lamp_on);
+    printSerial("Count: %d | Temperature: %d | Minute: %d | Lamp On: %d",
+                (int)s.count,
+                (int)s.timeframes[i].temperature,
+                (int)s.timeframes[i].minute_of_day,
+                (int)s.timeframes[i].lamp_on);
   }
 }
 
@@ -297,6 +302,6 @@ void infodump(Schedule s, ControlMode cm)
   }
   }
 
-  mqtt_publish("/mc/startup", json);
+  mqtt_publish("/mc/startup", json, false);
   return;
 }

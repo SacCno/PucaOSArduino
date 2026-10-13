@@ -2,6 +2,7 @@
 #include <DallasTemperature.h>
 
 #include "platform.h"
+#include "temperature.h"
 
 const int SENSOR_PIN = 5;
 
@@ -9,12 +10,12 @@ OneWire oneWire(SENSOR_PIN);
 
 DallasTemperature sensors(&oneWire);
 
-extern "C" void init_temp()
+void init_temp()
 {
     sensors.begin();
 }
 
-extern "C" uint16_t sensor_temp()
+uint16_t sensor_temp()
 {
     sensors.requestTemperatures();
 
@@ -22,7 +23,8 @@ extern "C" uint16_t sensor_temp()
     if (temperature == -127.00)
     {
         printSerial("Error: Cannot get temperature data.");
+        return 0;
     }
 
-    return (uint16_t)(temperature * 10);
+    return (uint16_t)(temperature * 100);
 }
